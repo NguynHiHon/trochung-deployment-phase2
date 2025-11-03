@@ -42,9 +42,15 @@ const whitelist = [
 
 const corsOptions = {
   origin: function (origin, callback) {
+    // Debug/log origin and allow localhost patterns for dev
+    console.log('CORS origin check, incoming Origin header:', origin);
     // allow requests with no origin (like mobile apps or curl)
     if (!origin) return callback(null, true);
     if (whitelist.indexOf(origin) !== -1) {
+      return callback(null, true);
+    }
+    // allow any localhost origin (http://localhost:3000 or 127.0.0.1 variants)
+    if (typeof origin === 'string' && origin.includes('localhost')) {
       return callback(null, true);
     }
     return callback(new Error('Not allowed by CORS'));
