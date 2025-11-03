@@ -131,11 +131,13 @@ const authControllers = {
 
         // Set cookie with refresh token (httpOnly)
         console.log('Setting refreshToken cookie...');
-  const cookieOpts = {
+        // Determine secure flag based on actual request (works with proxy when trust proxy is enabled)
+        const isSecureRequest = !!(req.secure || (req.headers && req.headers['x-forwarded-proto'] && req.headers['x-forwarded-proto'].includes('https')));
+        const cookieOpts = {
           httpOnly: true,
           path: '/',
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+          secure: isSecureRequest || process.env.NODE_ENV === 'production',
+          sameSite: isSecureRequest || process.env.NODE_ENV === 'production' ? 'none' : 'lax',
           maxAge: 30 * 24 * 60 * 60 * 1000,
         };
 
@@ -234,11 +236,12 @@ const authControllers = {
         }
 
         // Use the same cookie options as login so attributes are consistent
+        const isSecureReq2 = !!(req.secure || (req.headers && req.headers['x-forwarded-proto'] && req.headers['x-forwarded-proto'].includes('https')));
         const cookieOptsForRefresh = {
           httpOnly: true,
           path: '/',
-          secure: process.env.NODE_ENV === 'production',
-          sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+          secure: isSecureReq2 || process.env.NODE_ENV === 'production',
+          sameSite: isSecureReq2 || process.env.NODE_ENV === 'production' ? 'none' : 'lax',
           maxAge: 30 * 24 * 60 * 60 * 1000,
         };
 

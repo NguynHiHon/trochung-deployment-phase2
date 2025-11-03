@@ -28,12 +28,36 @@ cloudinary.config({
 
 const app = express();
 
-app.use(cors({
-  origin: ['http://localhost:3000', 'http://127.0.0.1:3000'],
+// If the app is behind a proxy (Render, Heroku, etc.), enable trust proxy
+// so req.secure and req.protocol reflect the original request protocol.
+app.set('trust proxy', true);
+
+// CORS configuration - explicitly allow the frontend origins and enable credentials
+const whitelist = [
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  // add your deployed frontend origin here when available, e.g.
+  // 'https://your-frontend.example.com'
+];
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    // allow requests with no origin (like mobile apps or curl)
+    if (!origin) return callback(null, true);
+    if (whitelist.indexOf(origin) !== -1) {
+      return callback(null, true);
+    }
+    return callback(new Error('Not allowed by CORS'));
+  },
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'token']
-}));
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'token'],
+  exposedHeaders: ['Set-Cookie']
+};
+
+app.use(cors(corsOptions));
+// Ensure preflight OPTIONS requests return the CORS headers
+app.options('*', cors(corsOptions));
 
 const mongoUrl = process.env.MONGO_URL;
 console.log("Attempting to connect to:",
