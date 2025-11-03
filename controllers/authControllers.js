@@ -170,7 +170,10 @@ const authControllers = {
   // ====== Đăng xuất ======
   logout: (req, res) => {
     try {
-  const refreshToken = req.cookies?.refreshToken;
+      const refreshToken = req.cookies?.refreshToken;
+
+      console.log('Logout request cookies:', req.cookies);
+
       // If cookie present, try to find the user and clear stored retoken
       if (refreshToken) {
         // decode to get user id
@@ -181,13 +184,25 @@ const authControllers = {
           // invalid token — nothing to clear by id
         }
       }
-      // when clearing a cookie that was set with attributes, include same attributes
+
+      // Compute cookie attributes consistently with how we set them (use request to detect HTTPS behind a proxy)
+      const isSecureReq = !!(req.secure || (req.headers && req.headers['x-forwarded-proto'] && req.headers['x-forwarded-proto'].includes('https')));
+      const domainOption = process.env.COOKIE_DOMAIN || undefined; // set COOKIE_DOMAIN in env if you need an explicit domain
       const clearOpts = {
         path: '/',
         httpOnly: true,
-        secure: process.env.NODE_ENV === 'production',
-        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+        secure: isSecureReq || process.env.NODE_ENV === 'production',
+        sameSite: isSecureReq || process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+        domain: domainOption,
       };
+
+      // Also set an expired cookie to ensure browsers remove it reliably
+      try {
+        res.cookie('refreshToken', '', { ...clearOpts, expires: new Date(0) });
+      } catch (e) {
+        console.error('Error setting expired cookie during logout:', e);
+      }
+
       res.clearCookie('refreshToken', clearOpts);
       return res.status(200).json({ success: true, message: 'User logged out' });
     } catch (err) {
