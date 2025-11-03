@@ -55,9 +55,8 @@ const corsOptions = {
   exposedHeaders: ['Set-Cookie']
 };
 
+// Use CORS middleware (it will handle preflight OPTIONS requests)
 app.use(cors(corsOptions));
-// Ensure preflight OPTIONS requests return the CORS headers
-app.options('*', cors(corsOptions));
 
 const mongoUrl = process.env.MONGO_URL;
 console.log("Attempting to connect to:",
