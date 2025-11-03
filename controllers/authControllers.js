@@ -142,7 +142,14 @@ const authControllers = {
 
 
         res.cookie('refreshToken', refreshToken, cookieOpts);
-        console.log('Cookie set successfully');
+        // Log the Set-Cookie header so we can verify what was sent to the client
+        try {
+          const setCookieHeader = res.getHeader && res.getHeader('Set-Cookie');
+          console.log('Set-Cookie header after login:', setCookieHeader);
+        } catch (logErr) {
+          console.error('Error reading Set-Cookie header after login:', logErr);
+        }
+        console.log('Cookie set successfully (login)');
 
         const { password, ...userAuth } = user._doc;
         res.status(200).json({ user: userAuth, accessToken });
@@ -236,6 +243,12 @@ const authControllers = {
         };
 
         res.cookie('refreshToken', newRefreshToken, cookieOptsForRefresh);
+        try {
+          const setCookieHeader2 = res.getHeader && res.getHeader('Set-Cookie');
+          console.log('Set-Cookie header after refresh:', setCookieHeader2);
+        } catch (logErr2) {
+          console.error('Error reading Set-Cookie header after refresh:', logErr2);
+        }
 
         return res.status(200).json({ accessToken: newAccessToken });
       } catch (e) {
