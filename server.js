@@ -43,7 +43,9 @@ const whitelist = [
 // If FRONTEND_URL is set in environment (recommended for deploy), add it to whitelist
 if (process.env.FRONTEND_URL) {
   try {
-    const url = process.env.FRONTEND_URL.trim();
+    // Normalize FRONTEND_URL: trim and remove any trailing slashes so
+    // origin comparisons are consistent (Origin headers never include a trailing slash).
+    const url = process.env.FRONTEND_URL.trim().replace(/\/+$|\/$/g, '').replace(/\s+/g, '');
     if (url && whitelist.indexOf(url) === -1) whitelist.push(url);
   } catch (e) {
     console.error('Invalid FRONTEND_URL env var:', process.env.FRONTEND_URL);
@@ -56,15 +58,19 @@ const corsOptions = {
   origin: function (origin, callback) {
     // Debug/log origin and allow localhost patterns for dev
     console.log('CORS origin check, incoming Origin header:', origin);
+    // normalize incoming origin (strip trailing slash) for safe comparison
+    const normalizedOrigin = typeof origin === 'string' ? origin.replace(/\/+$/g, '') : origin;
+    console.log('CORS normalized origin:', normalizedOrigin);
     // allow requests with no origin (like mobile apps or curl)
     if (!origin) return callback(null, true);
-    if (whitelist.indexOf(origin) !== -1) {
+    if (whitelist.indexOf(normalizedOrigin) !== -1) {
       return callback(null, true);
     }
     // allow any localhost origin (http://localhost:3000 or 127.0.0.1 variants)
-    if (typeof origin === 'string' && origin.includes('localhost')) {
+    if (typeof normalizedOrigin === 'string' && (normalizedOrigin.includes('localhost') || normalizedOrigin.includes('127.0.0.1'))) {
       return callback(null, true);
     }
+    console.warn('CORS check failed. Whitelist:', whitelist);
     return callback(new Error('Not allowed by CORS'));
   },
   credentials: true,
