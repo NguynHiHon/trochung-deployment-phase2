@@ -40,6 +40,18 @@ const whitelist = [
   // 'https://your-frontend.example.com'
 ];
 
+// If FRONTEND_URL is set in environment (recommended for deploy), add it to whitelist
+if (process.env.FRONTEND_URL) {
+  try {
+    const url = process.env.FRONTEND_URL.trim();
+    if (url && whitelist.indexOf(url) === -1) whitelist.push(url);
+  } catch (e) {
+    console.error('Invalid FRONTEND_URL env var:', process.env.FRONTEND_URL);
+  }
+}
+
+console.log('CORS whitelist:', whitelist);
+
 const corsOptions = {
   origin: function (origin, callback) {
     // Debug/log origin and allow localhost patterns for dev
