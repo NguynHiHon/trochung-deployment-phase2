@@ -161,7 +161,7 @@ const authControllers = {
   // ====== Đăng xuất ======
   logout: (req, res) => {
     try {
-      const refreshToken = req.cookies?.refreshToken;
+  const refreshToken = req.cookies?.refreshToken;
       // If cookie present, try to find the user and clear stored retoken
       if (refreshToken) {
         // decode to get user id
@@ -172,7 +172,14 @@ const authControllers = {
           // invalid token — nothing to clear by id
         }
       }
-      res.clearCookie('refreshToken');
+      // when clearing a cookie that was set with attributes, include same attributes
+      const clearOpts = {
+        path: '/',
+        httpOnly: true,
+        secure: process.env.NODE_ENV === 'production',
+        sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
+      };
+      res.clearCookie('refreshToken', clearOpts);
       return res.status(200).json({ success: true, message: 'User logged out' });
     } catch (err) {
       console.error('Error during logout:', err);
@@ -219,13 +226,16 @@ const authControllers = {
           console.error('Error hashing new refresh token:', hashErr);
         }
 
-        res.cookie('refreshToken', newRefreshToken, {
+        // Use the same cookie options as login so attributes are consistent
+        const cookieOptsForRefresh = {
           httpOnly: true,
           path: '/',
-          secure: false,
-          sameSite: 'strict',
+          secure: process.env.NODE_ENV === 'production',
+          sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
           maxAge: 30 * 24 * 60 * 60 * 1000,
-        });
+        };
+
+        res.cookie('refreshToken', newRefreshToken, cookieOptsForRefresh);
 
         return res.status(200).json({ accessToken: newAccessToken });
       } catch (e) {
