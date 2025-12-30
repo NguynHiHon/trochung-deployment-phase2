@@ -70,6 +70,17 @@ const corsOptions = {
     if (typeof normalizedOrigin === 'string' && (normalizedOrigin.includes('localhost') || normalizedOrigin.includes('127.0.0.1'))) {
       return callback(null, true);
     }
+
+    // Allow Vercel preview and production domains (e.g. *.vercel.app)
+    // This is useful when your front-end is deployed as preview apps on Vercel
+    // which generate dynamic subdomains like
+    // `trochung-deployment-fe-phase2-hwoa72ovm-...vercel.app`.
+    // IMPORTANT: because credentials are enabled, allow only vercel.app suffix
+    // if you trust all Vercel preview builds for this project.
+    if (typeof normalizedOrigin === 'string' && normalizedOrigin.endsWith('.vercel.app')) {
+      console.log('Allowing Vercel origin:', normalizedOrigin);
+      return callback(null, true);
+    }
     console.warn('CORS check failed. Whitelist:', whitelist);
     return callback(new Error('Not allowed by CORS'));
   },
@@ -107,7 +118,6 @@ app.use(cookieParser());
 app.use(express.json());
 
 // Public folder cho ảnh/video nếu lưu local
-app.use('/uploads', express.static('uploads'));
 
 // Debug request
 app.use((req, res, next) => {

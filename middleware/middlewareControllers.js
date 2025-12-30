@@ -2,8 +2,7 @@ const jwt = require('jsonwebtoken');
 
 const middlewareControllers = {
     verifyToken: (req, res, next) => {
-        console.log('--- Middleware verifyToken ---');
-        console.log('Headers:', req.headers);
+
         const token = req.headers.authorization || req.headers.token;
         console.log('Token received:', token);
 
