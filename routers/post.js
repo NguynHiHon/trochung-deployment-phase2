@@ -4,7 +4,7 @@ const path = require('path');
 const { verifyToken, verifyAdmin } = require('../middleware/middlewareControllers');
 
 // Change status post (admin only): pending <-> rejected
-const { createPost, getHomeData,listMyPosts, listByUser, getPostById, getPostByRoom,getAllRooms, getRoomById } = require('../controllers/postController');
+const { createPost, getHomeData, listMyPosts, listByUser, getPostById, getPostByRoom, getAllRooms, getRoomById, getLatestPosts } = require('../controllers/postController');
 
 const router = express.Router();
 
@@ -33,6 +33,8 @@ const uploadFields = upload.fields([
 ]);
 
 // Public routes - không cần authentication
+// latest posts (cursor-based) for infinite scroll / load-more
+router.get('/latest', getLatestPosts);
 router.get('/rooms', getAllRooms);
 router.get('/rooms/:id', getRoomById);
 router.put('/:id/change-status', verifyAdmin, require('../controllers/postController').changeStatusPost);

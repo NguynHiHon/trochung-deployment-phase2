@@ -5,6 +5,11 @@ const User = require('../models/Users');
 const IsLandor = require('../models/IsLandor');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
+const { console } = require('inspector');
+const { matchRoomsWithAI } = require('../services/searchAI/aiMatchingService');
+
+// Utility: escape string for use in RegExp
+const escapeRegExp = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 // API: Admin change status of post (pending <-> rejected)
 exports.changeStatusPost = async (req, res) => {
@@ -29,28 +34,266 @@ exports.changeStatusPost = async (req, res) => {
 // Lấy danh sách tất cả phòng trọ với thông tin chi tiết
 exports.getAllRooms = async (req, res) => {
     try {
-        const rooms = await Room.find()
-            .populate('post', 'title overviewDescription status createdAt postType')
-            .populate('user', 'username email phone')
-            .sort({ createdAt: -1 });
+        // Support paginated queries and basic filters via query params
+        const page = Math.max(1, parseInt(req.query.page) || 1);
+        const limit = Math.max(1, Math.min(100, parseInt(req.query.limit) || 12));
+        const skip = (page - 1) * limit;
 
-        // Filter out rooms without posts or with rejected posts
-        const validRooms = rooms.filter(room => room.post && room.post.status !== 'rejected');
-        
-        console.log(`Found ${rooms.length} total rooms, ${validRooms.length} valid rooms`);
+        console.log('🔍 ALL Query Params:', req.query);
+
+        const q = {};
+        // Only include rooms whose post exists and is not rejected - we'll filter after populate
+
+        // Search in title / address / user based on searchType
+        let searchByTitle = null;
+        let searchByUser = null;
+
+        if (req.query.search) {
+            const searchType = req.query.searchType || 'title';
+
+            if (searchType === 'title') {
+                // For title search, we'll filter after populate to search in post.title and room fields
+                searchByTitle = req.query.search;
+            } else if (searchType === 'user') {
+                // Search by username - we'll filter after populate
+                searchByUser = req.query.search;
+            }
+        }
+
+        // Price range (expected in millions or VND? frontend sends minPrice/maxPrice in millions)
+        if (req.query.minPrice || req.query.maxPrice) {
+            const min = Number(req.query.minPrice || 0);
+            const max = Number(req.query.maxPrice || 0);
+            // assume frontend sends price in millions -> convert to VND if small
+            const minV = min > 0 && min < 1000 ? Math.round(min * 1000000) : min;
+            const maxV = max > 0 && max < 1000 ? Math.round(max * 1000000) : max;
+            q.price = {};
+            if (minV) q.price.$gte = minV;
+            if (maxV) q.price.$lte = maxV;
+        }
+
+        // Area
+        if (req.query.minArea || req.query.maxArea) {
+            q.area = {};
+            if (req.query.minArea) q.area.$gte = Number(req.query.minArea);
+            if (req.query.maxArea) q.area.$lte = Number(req.query.maxArea);
+        }
+
+        if (req.query.city) {
+            // Flexible search: match with or without prefix (Thành phố, Tỉnh, TP.)
+            const cityName = escapeRegExp(req.query.city);
+            q.province = new RegExp('(Thành phố |Tỉnh |TP\\.?\\s*)?' + cityName, 'i');
+        }
+        if (req.query.district) {
+            // Flexible search: match with or without prefix (Quận, Huyện, Thị xã, Thành phố)
+            const districtName = escapeRegExp(req.query.district);
+            q.district = new RegExp('(Quận |Huyện |Thị xã |Thành phố |TX\\.?\\s*|TP\\.?\\s*)?' + districtName, 'i');
+        }
+        if (req.query.ward) {
+            // Flexible search: match with or without prefix (Phường, Xã, Thị trấn)
+            const wardName = escapeRegExp(req.query.ward);
+            q.ward = new RegExp('(Phường |Xã |Thị trấn |TT\\.?\\s*|P\\.?\\s*|X\\.?\\s*)?' + wardName, 'i');
+        }
+
+        if (req.query.types) {
+            const arr = String(req.query.types).split(',').map(s => s.trim()).filter(Boolean);
+            if (arr.length) q.roomType = { $in: arr };
+        }
+
+        // Utilities filter - will be applied in aggregation pipeline for better regex support
+        let utilitiesFilter = null;
+        if (req.query.utilities) {
+            const utilArr = String(req.query.utilities).split(',').map(s => s.trim()).filter(Boolean);
+            if (utilArr.length) {
+                console.log('🔍 Utilities Filter Query:', utilArr);
+                // Store for later use in pipeline
+                utilitiesFilter = utilArr;
+            }
+        }
+
+        console.log('🔍 Final Room Query:', JSON.stringify(q, null, 2));
+
+        // Use aggregation to filter by post status before pagination
+        let pipeline = [
+            { $match: q }
+        ];
+
+        // Lookup posts first to filter by postType if provided
+        pipeline = pipeline.concat([
+            {
+                $lookup: {
+                    from: 'posts',
+                    localField: 'post',
+                    foreignField: '_id',
+                    as: 'postData'
+                }
+            },
+            { $unwind: { path: '$postData', preserveNullAndEmptyArrays: false } },
+            {
+                $match: {
+                    'postData.status': { $ne: 'rejected' }
+                }
+            }
+        ]);
+
+        // Filter by postType if specified
+        if (req.query.postType) {
+            console.log('🔍 [DEBUG] Filtering by postType:', req.query.postType);
+            pipeline.push({
+                $match: {
+                    'postData.postType': req.query.postType
+                }
+            });
+        }
+
+        // Continue with other lookups
+        pipeline = pipeline.concat([
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: 'user',
+                    foreignField: '_id',
+                    as: 'userData'
+                }
+            },
+            { $unwind: { path: '$userData', preserveNullAndEmptyArrays: true } },
+            {
+                $lookup: {
+                    from: 'user_infos',
+                    localField: 'user',
+                    foreignField: 'userId',
+                    as: 'userInfoData'
+                }
+            },
+            { $unwind: { path: '$userInfoData', preserveNullAndEmptyArrays: true } },
+            {
+                $lookup: {
+                    from: 'ratings',
+                    localField: 'post',
+                    foreignField: 'post',
+                    as: 'ratingsData'
+                }
+            },
+            {
+                $addFields: {
+                    averageRating: {
+                        $cond: {
+                            if: { $gt: [{ $size: '$ratingsData' }, 0] },
+                            then: { $avg: '$ratingsData.stars' },
+                            else: 0
+                        }
+                    },
+                    totalRatings: { $size: '$ratingsData' }
+                }
+            }
+        ]);
+
+        // Apply utilities filter in pipeline with case-insensitive regex
+        if (utilitiesFilter && utilitiesFilter.length > 0) {
+            console.log('🔍 [DEBUG] Utilities from query:', utilitiesFilter);
+
+            // Room must have ALL specified utilities (case-insensitive match)
+            // Use $and with $elemMatch for each utility to ensure all are present
+            const utilityMatches = utilitiesFilter.map(u => {
+                const escapedU = escapeRegExp(u);
+                console.log(`🔍 [DEBUG] Processing utility: "${u}" -> escaped: "${escapedU}"`);
+                return {
+                    utilities: {
+                        $elemMatch: { $regex: escapedU, $options: 'i' }
+                    }
+                };
+            });
+
+            console.log('🔍 [DEBUG] Generated utility matches:', JSON.stringify(utilityMatches, null, 2));
+
+            const matchStage = {
+                $match: {
+                    $and: utilityMatches
+                }
+            };
+
+            console.log('🔍 [DEBUG] Adding match stage:', JSON.stringify(matchStage, null, 2));
+            pipeline.push(matchStage);
+
+            console.log('🔍 [DEBUG] Pipeline after utilities filter:', JSON.stringify(pipeline, null, 2));
+        }
+
+        // Additional filters after populate
+        console.log('🔍 [DEBUG] Pipeline before additional filters:', pipeline.length, 'stages');
+
+        if (searchByTitle) {
+            const titleRe = escapeRegExp(searchByTitle);
+            pipeline.push({
+                $match: {
+                    $or: [
+                        { 'postData.title': { $regex: titleRe, $options: 'i' } },
+                        { address: { $regex: titleRe, $options: 'i' } },
+                        { province: { $regex: titleRe, $options: 'i' } },
+                        { district: { $regex: titleRe, $options: 'i' } }
+                    ]
+                }
+            });
+        }
+
+        if (searchByUser) {
+            const userRe = escapeRegExp(searchByUser);
+            pipeline.push({
+                $match: {
+                    $or: [
+                        { 'userData.username': { $regex: userRe, $options: 'i' } },
+                        { 'userData.email': { $regex: userRe, $options: 'i' } }
+                    ]
+                }
+            });
+        }
+
+        // Get total count with filters
+        const countPipeline = [...pipeline, { $count: 'total' }];
+        const countResult = await Room.aggregate(countPipeline);
+        const totalCount = countResult.length > 0 ? countResult[0].total : 0;
+
+        // Sorting
+        let sortStage = { createdAt: -1 };
+        if (req.query.sort === 'newest') sortStage = { createdAt: -1 };
+        else if (req.query.sort === 'priceAsc') sortStage = { price: 1 };
+        else if (req.query.sort === 'priceDesc') sortStage = { price: -1 };
+
+        console.log('🔍 [DEBUG] About to execute aggregation with', pipeline.length, 'stages');
+
+        pipeline.push({ $sort: sortStage });
+        pipeline.push({ $skip: skip });
+        pipeline.push({ $limit: limit });
+
+        const rooms = await Room.aggregate(pipeline);
+
+        console.log('🔍 [DEBUG] Found rooms count after filters:', rooms.length);
+        console.log('🔍 [DEBUG] Total rooms available:', totalCount);
+        if (req.query.utilities) {
+            console.log('🔍 [DEBUG] Utilities query param:', req.query.utilities);
+            if (rooms.length > 0) {
+                console.log('🔍 [DEBUG] First room utilities:', rooms[0].utilities);
+                console.log('🔍 [DEBUG] First 3 rooms utilities:', rooms.slice(0, 3).map(r => ({ id: r._id, utilities: r.utilities })));
+            } else {
+                console.log('🔍 [DEBUG] No rooms found matching utilities filter!');
+            }
+        }
 
         // Format data để phù hợp với frontend
-        const formattedRooms = validRooms.map(room => ({
+        const formattedRooms = rooms.map(room => ({
             id: room._id.toString(),
-            postId: room.post?._id?.toString() || null,
-            title: room.post?.title || 'Không có tiêu đề',
-            postType: room.post?.postType || 'room_rental',
+            postId: room.postData?._id?.toString() || null,
+            title: room.postData?.title || 'Không có tiêu đề',
+            postType: room.postData?.postType || 'room_rental',
+            postTier: room.postData?.postTier || 'normal',
             price: room.price,
             unit: room.unit,
             area: room.area,
+            beds: room.beds || 0,
+            baths: room.baths || 0,
             roomType: room.roomType,
             address: room.address,
             city: room.province,
+            district: room.district,
             district: room.district,
             ward: room.ward,
             image: room.images && room.images.length > 0 ? room.images[0] : '/logo512.png',
@@ -59,23 +302,87 @@ exports.getAllRooms = async (req, res) => {
             utilities: room.utilities || [],
             additionalCosts: room.additionalCosts || [],
             notes: room.notes || '',
-            author: room.user?.username || 'Người đăng',
-            phone: room.user?.phone || '',
-            email: room.user?.email || '',
-            description: room.post?.overviewDescription || '',
-            status: room.post?.status || 'pending',
-            postedAt: room.post?.createdAt || room.createdAt,
+            author: room.userData?.username || 'Người đăng',
+            authorAvatar: room.userInfoData?.avatar || null,
+            phone: room.userData?.phone || '',
+            email: room.userData?.email || '',
+            description: room.postData?.overviewDescription || '',
+            status: room.postData?.status || 'pending',
+            postedAt: room.postData?.createdAt || room.createdAt,
+            rating: room.averageRating ? Number(room.averageRating.toFixed(1)) : 0,
+            totalRatings: room.totalRatings || 0,
             location: {
-                lat: 10.77653, // Default coordinates for HCM
+                lat: 10.77653,
                 lng: 106.70098,
                 address: `${room.address}, ${room.district}, ${room.province}`
-            }
+            },
+            // Thêm thông tin từ UserInfo cho AI matching
+            authorInterests: room.userInfoData?.interests || [],
+            authorHabits: room.userInfoData?.habits || [],
+            authorDislikes: room.userInfoData?.dislikes || [],
+            authorBio: room.userInfoData?.bio || '',
+            authorAge: room.userInfoData?.age || null,
+            authorGender: room.userInfoData?.gender || null,
+            authorProfession: room.userInfoData?.profession || ''
         }));
+
+
+        // AI Search Processing
+        let aiMessage = null;
+        let aiStats = null;
+        let finalRooms = formattedRooms; // Giữ format gốc
+        const textSearchAI = req.query.textSearchAI || req.query.TextSearchAI;
+
+        if (textSearchAI) {
+            console.log('🤖 [Controller] AI Search detected:', textSearchAI);
+
+            // Gửi formattedRooms (đã có format chuẩn) cho AI service
+            const aiResult = await matchRoomsWithAI(formattedRooms, textSearchAI);
+
+            if (aiResult.success && aiResult.matchedIds && aiResult.matchedIds.length > 0) {
+                console.log('🤖 [Controller] AI matching successful, filtering formatted rooms');
+
+                // Tạo Map từ formattedRooms để tra cứu nhanh
+                const roomMap = new Map();
+                formattedRooms.forEach(room => {
+                    roomMap.set(room.id, room);
+                });
+
+                // Tạo Map reasons từ AI
+                const reasonMap = new Map();
+                aiResult.matchedIds.forEach(item => {
+                    reasonMap.set(item.id, item.reason);
+                });
+
+                // Filter và sắp xếp theo thứ tự AI suggest, giữ nguyên format gốc
+                finalRooms = aiResult.matchedIds
+                    .map(item => {
+                        const room = roomMap.get(item.id);
+                        if (room) {
+                            return {
+                                ...room, // Giữ nguyên tất cả fields từ format gốc
+                                aiReason: reasonMap.get(item.id) // Chỉ thêm aiReason
+                            };
+                        }
+                        return null;
+                    })
+                    .filter(room => room !== null);
+
+                aiStats = aiResult.stats;
+                console.log('🤖 [Controller] Final matched rooms:', finalRooms.length);
+            } else {
+                console.log('🤖 [Controller] AI matching failed or no matches, using default results');
+                aiMessage = aiResult.message || 'Không tìm thấy phòng phù hợp với yêu cầu AI';
+            }
+        }
+
 
         res.json({
             success: true,
-            rooms: formattedRooms,
-            total: formattedRooms.length
+            rooms: finalRooms, // Trả về finalRooms (có thể là formattedRooms gốc hoặc filtered by AI)
+            total: totalCount,
+            aiMessage: aiMessage,
+            aiStats: aiStats
         });
     } catch (error) {
         console.error('Error fetching rooms:', error);
@@ -91,7 +398,7 @@ exports.getAllRooms = async (req, res) => {
 exports.getRoomById = async (req, res) => {
     try {
         const { id } = req.params;
-        
+
         const room = await Room.findById(id)
             .populate('post', 'title overviewDescription status createdAt')
             .populate('user', 'username email phone');
@@ -288,8 +595,8 @@ exports.createPost = async (req, res) => {
 
         // tạo Post tối giản trước (title, postType, user)
         // If this is an invite-roommate post, ensure only one exists per user
-    const requestedPostType = requestedPostTypeEarly;
-    const isInvite = isInviteEarly;
+        const requestedPostType = requestedPostTypeEarly;
+        const isInvite = isInviteEarly;
 
         // enforce uniqueness: user can only have one active invite-roommate post
         if (isInvite) {
@@ -302,7 +609,7 @@ exports.createPost = async (req, res) => {
         const post = new Post({
             title: form.title || form.name || '',
             postType: isInvite ? 'invite roomate' : (form.postType || 'room_rental'),
-            postTier: (form.postTier && ['svip','vip','normal'].includes(String(form.postTier)) ? String(form.postTier) : 'normal'),
+            postTier: (form.postTier && ['svip', 'vip', 'normal'].includes(String(form.postTier)) ? String(form.postTier) : 'normal'),
             user: req.user?.id || form.user,
             overviewDescription: form.overviewDescription || form.description || ''
         });
@@ -353,24 +660,26 @@ exports.createPost = async (req, res) => {
         try {
             room = await Room.create({
 
-            // lưu tên dạng có thể đọc được (ưu tiên tên, không phải mã)
-            province:   form.location?.province || form.location?.city || '',
-            district:   form.location?.district || '',
-            ward: form.location?.wardName || form.location?.ward || '',
-            address: form.location?.detailAddress || '',
-            roomType: form.roomType || form.category || '',
-            price: Number(form.price || form.priceFrom) || 0,
-            unit: form.unit || 'VND',
-            area: Number(form.area) || 0,
-            utilities: Array.isArray(form.utilities) ? form.utilities : (form.utilities ? [form.utilities] : []),
-            additionalCosts: sanitizedAdditionalCosts,
-            images: mediaUploaded.filter(f => f.type === 'image').map(f => f.url),
-            videos: mediaUploaded.filter(f => f.type === 'video').map(f => f.url),
-            contractImages: contractUploaded.map(f => f.url),
-            notes: form.notes || '',
-            post: post._id,
-            user: req.user?.id || form.user
-        });
+                // lưu tên dạng có thể đọc được (ưu tiên tên, không phải mã)
+                province: form.location?.province || form.location?.city || '',
+                district: form.location?.district || '',
+                ward: form.location?.wardName || form.location?.ward || '',
+                address: form.location?.detailAddress || '',
+                roomType: form.roomType || form.category || '',
+                price: Number(form.price || form.priceFrom) || 0,
+                unit: form.unit || 'VND',
+                area: Number(form.area) || 0,
+                beds: Number(form.beds) || 0,
+                baths: Number(form.baths) || 0,
+                utilities: Array.isArray(form.utilities) ? form.utilities : (form.utilities ? [form.utilities] : []),
+                additionalCosts: sanitizedAdditionalCosts,
+                images: mediaUploaded.filter(f => f.type === 'image').map(f => f.url),
+                videos: mediaUploaded.filter(f => f.type === 'video').map(f => f.url),
+                contractImages: contractUploaded.map(f => f.url),
+                notes: form.notes || '',
+                post: post._id,
+                user: req.user?.id || form.user
+            });
 
 
 
@@ -511,8 +820,8 @@ exports.getPostById = async (req, res) => {
         const id = req.params.id;
         if (!id) return res.status(400).json({ success: false, message: 'Missing post id' });
 
-    // Populate userInfo so invite posts can expose roommate preferences
-    const post = await Post.findById(id).populate('room').populate('user').populate('userInfo');
+        // Populate userInfo so invite posts can expose roommate preferences
+        const post = await Post.findById(id).populate('room').populate('user').populate('userInfo');
         if (!post) return res.status(404).json({ success: false, message: 'Post not found' });
 
         return res.json({ success: true, post });
@@ -528,8 +837,8 @@ exports.getPostByRoom = async (req, res) => {
         const roomId = req.params.roomId;
         if (!roomId) return res.status(400).json({ success: false, message: 'Missing room id' });
 
-    // populate userInfo as well
-    const post = await Post.findOne({ room: roomId }).populate('room').populate('user').populate('userInfo');
+        // populate userInfo as well
+        const post = await Post.findOne({ room: roomId }).populate('room').populate('user').populate('userInfo');
         if (!post) return res.status(404).json({ success: false, message: 'Post not found for room' });
 
         return res.json({ success: true, post });
@@ -557,13 +866,13 @@ exports.updatePost = async (req, res) => {
             return res.status(403).json({ success: false, message: 'Forbidden' });
         }
 
-    const { title, overviewDescription, postType, room: roomFields, postTier, images, videos, contractImages } = req.body || {};
+        const { title, overviewDescription, postType, room: roomFields, postTier, images, videos, contractImages } = req.body || {};
 
         // Update post fields
         if (typeof title === 'string') post.title = title;
         if (typeof overviewDescription === 'string') post.overviewDescription = overviewDescription;
         if (typeof postType === 'string') post.postType = postType;
-    if (typeof postTier === 'string' && ['svip','vip','normal'].includes(postTier)) post.postTier = postTier;
+        if (typeof postTier === 'string' && ['svip', 'vip', 'normal'].includes(postTier)) post.postTier = postTier;
 
         // Update room if provided
         if (post.room && roomFields && typeof roomFields === 'object') {
@@ -704,5 +1013,113 @@ exports.getHomeData = async (req, res) => {
             success: false,
             message: 'Server error'
         });
+    }
+};
+
+// GET /api/posts/latest?limit=8&after=<cursor>&type=<postType>
+// Cursor format: createdAtISO::id  (e.g. 2025-11-25T12:00:00.000Z::617...)
+// Optional `type` (or `postType`) param filters by postType (case-insensitive).
+// Accepts shorthand `invite` -> mapped to stored 'invite roomate'.
+exports.getLatestPosts = async (req, res) => {
+    try {
+        const limit = Math.min(100, Math.max(1, Number(req.query.limit) || 8));
+        const rawAfter = req.query.after ? String(req.query.after) : null;
+        let afterDate = null;
+        let afterId = null;
+        if (rawAfter) {
+            const parts = rawAfter.split('::');
+            if (parts.length === 2) {
+                const d = new Date(parts[0]);
+                if (!isNaN(d.getTime())) afterDate = d;
+                afterId = parts[1];
+            } else {
+                const d = new Date(rawAfter);
+                if (!isNaN(d.getTime())) afterDate = d;
+            }
+        }
+
+        const q = {};
+        q.status = { $ne: 'rejected' };
+
+        // optional filter by type/postType
+        const rawType = (req.query.type || req.query.postType || '').toString().trim();
+        if (rawType && rawType.toLowerCase() !== 'all') {
+
+            // Normalize some common shorthands
+            const t = rawType.toLowerCase();
+            let target = rawType;
+            if (t === 'invite' || t === 'invite-roomate' || t === 'invite_roomate' || t === 'invite-roommate' || t === 'invite_roommate') {
+                target = 'invite roomate';
+            }
+            // Use case-insensitive exact match via regex
+            const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            q.postType = { $regex: new RegExp('^' + escapeRegExp(String(target)) + '$', 'i') };
+        }
+
+        // optional filter by postTier (comma-separated). Example: postTier=svip,vip
+        const rawTier = (req.query.postTier || req.query.tier || '').toString().trim();
+        if (rawTier) {
+            console.log('TÌM THẤY postTier:', rawTier);
+
+            const parts = rawTier.split(',').map(s => s.toString().trim()).filter(Boolean);
+            if (parts.length) {
+                // allow case-insensitive matching by using regex values in $in
+                const regexes = parts.map(p => new RegExp('^' + escapeRegExp(p) + '$', 'i'));
+                q.postTier = { $in: regexes };
+            }
+        } else {
+            console.log('KHÔNG TÌM THẤY postTier trong yêu cầu');
+        }
+
+        if (afterDate) {
+            if (afterId) {
+                q.$or = [
+                    { createdAt: { $lt: afterDate } },
+                    { $and: [{ createdAt: afterDate }, { _id: { $lt: afterId } }] }
+                ];
+            } else {
+                q.createdAt = { $lt: afterDate };
+            }
+        }
+
+        const posts = await Post.find(q)
+            .populate('room')
+            .populate('user', 'username email phone')
+            .sort({ createdAt: -1 })
+            .limit(limit + 1);
+
+        const hasMore = posts.length > limit;
+
+        const sliced = hasMore ? posts.slice(0, limit) : posts;
+
+        const items = sliced.map(post => ({
+            id: post._id,
+            title: post.title,
+            overviewDescription: post.overviewDescription || '',
+            postType: post.postType,
+            postTier: post.postTier,
+            status: post.status,
+            createdAt: post.createdAt,
+            user: post.user ? { id: post.user._id, username: post.user.username, phone: post.user.phone } : null,
+            room: post.room ? {
+                id: post.room._id,
+                price: post.room.price,
+                unit: post.room.unit,
+                area: post.room.area,
+                roomType: post.room.roomType,
+                address: post.room.address,
+                province: post.room.province,
+                district: post.room.district,
+                images: post.room.images || [],
+                utilities: post.room.utilities || []
+            } : null
+        }));
+
+        const nextCursor = (sliced.length > 0) ? `${sliced[sliced.length - 1].createdAt.toISOString()}::${sliced[sliced.length - 1]._id}` : null;
+
+        return res.json({ success: true, items, hasMore, nextCursor });
+    } catch (err) {
+        console.error('getLatestPosts error', err);
+        return res.status(500).json({ success: false, message: 'Server error' });
     }
 };

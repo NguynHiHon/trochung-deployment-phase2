@@ -6,6 +6,8 @@ const RoomSchema = new mongoose.Schema({
     price: { type: Number, required: true },          // Giá
     unit: { type: String, default: "VND" },   // Đơn vị
     area: { type: Number, required: true },           // Diện tích (m²)
+    beds: { type: Number, default: 0 },               // Số phòng ngủ
+    baths: { type: Number, default: 0 },              // Số phòng WC
     // Địa chỉ / vị trí cụ thể của phòng
     province: { type: String, required: true },
     district: { type: String, required: true },
