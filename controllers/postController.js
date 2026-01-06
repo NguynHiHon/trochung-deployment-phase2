@@ -6,6 +6,7 @@ const IsLandor = require('../models/IsLandor');
 const cloudinary = require('cloudinary').v2;
 const fs = require('fs');
 const { console } = require('inspector');
+const { matchRoomsWithAI } = require('../services/searchAI/aiMatchingService');
 
 // Utility: escape string for use in RegExp
 const escapeRegExp = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -37,6 +38,8 @@ exports.getAllRooms = async (req, res) => {
         const page = Math.max(1, parseInt(req.query.page) || 1);
         const limit = Math.max(1, Math.min(100, parseInt(req.query.limit) || 12));
         const skip = (page - 1) * limit;
+
+        console.log('🔍 ALL Query Params:', req.query);
 
         const q = {};
         // Only include rooms whose post exists and is not rejected - we'll filter after populate
@@ -97,61 +100,200 @@ exports.getAllRooms = async (req, res) => {
             if (arr.length) q.roomType = { $in: arr };
         }
 
-        // Build mongoose query with populate
-        const cursor = Room.find(q)
-            .populate('post', 'title overviewDescription status createdAt postType postTier')
-            .populate('user', 'username email phone');
-
-        // Sorting
-        if (req.query.sort === 'newest') cursor.sort({ createdAt: -1 });
-        else if (req.query.sort === 'priceAsc') cursor.sort({ price: 1 });
-        else if (req.query.sort === 'priceDesc') cursor.sort({ price: -1 });
-        else cursor.sort({ createdAt: -1 });
-
-        const totalCount = await Room.countDocuments(q);
-
-        const rooms = await cursor.skip(skip).limit(limit).exec();
-
-        // Filter out rooms without posts or with rejected posts
-        let validRooms = rooms.filter(room => room.post && room.post.status !== 'rejected');
-
-        // Additional filter by post title if searchType is 'title'
-        if (searchByTitle) {
-            const titleRe = new RegExp(escapeRegExp(searchByTitle), 'i');
-            validRooms = validRooms.filter(room =>
-                room.post && (
-                    titleRe.test(room.post.title) ||
-                    titleRe.test(room.address) ||
-                    titleRe.test(room.province) ||
-                    titleRe.test(room.district)
-                )
-            );
+        // Utilities filter - will be applied in aggregation pipeline for better regex support
+        let utilitiesFilter = null;
+        if (req.query.utilities) {
+            const utilArr = String(req.query.utilities).split(',').map(s => s.trim()).filter(Boolean);
+            if (utilArr.length) {
+                console.log('🔍 Utilities Filter Query:', utilArr);
+                // Store for later use in pipeline
+                utilitiesFilter = utilArr;
+            }
         }
 
-        // Additional filter by username if searchType is 'user'
+        console.log('🔍 Final Room Query:', JSON.stringify(q, null, 2));
+
+        // Use aggregation to filter by post status before pagination
+        let pipeline = [
+            { $match: q }
+        ];
+
+        // Lookup posts first to filter by postType if provided
+        pipeline = pipeline.concat([
+            {
+                $lookup: {
+                    from: 'posts',
+                    localField: 'post',
+                    foreignField: '_id',
+                    as: 'postData'
+                }
+            },
+            { $unwind: { path: '$postData', preserveNullAndEmptyArrays: false } },
+            {
+                $match: {
+                    'postData.status': { $ne: 'rejected' }
+                }
+            }
+        ]);
+
+        // Filter by postType if specified
+        if (req.query.postType) {
+            console.log('🔍 [DEBUG] Filtering by postType:', req.query.postType);
+            pipeline.push({
+                $match: {
+                    'postData.postType': req.query.postType
+                }
+            });
+        }
+
+        // Continue with other lookups
+        pipeline = pipeline.concat([
+            {
+                $lookup: {
+                    from: 'users',
+                    localField: 'user',
+                    foreignField: '_id',
+                    as: 'userData'
+                }
+            },
+            { $unwind: { path: '$userData', preserveNullAndEmptyArrays: true } },
+            {
+                $lookup: {
+                    from: 'user_infos',
+                    localField: 'user',
+                    foreignField: 'userId',
+                    as: 'userInfoData'
+                }
+            },
+            { $unwind: { path: '$userInfoData', preserveNullAndEmptyArrays: true } },
+            {
+                $lookup: {
+                    from: 'ratings',
+                    localField: 'post',
+                    foreignField: 'post',
+                    as: 'ratingsData'
+                }
+            },
+            {
+                $addFields: {
+                    averageRating: {
+                        $cond: {
+                            if: { $gt: [{ $size: '$ratingsData' }, 0] },
+                            then: { $avg: '$ratingsData.stars' },
+                            else: 0
+                        }
+                    },
+                    totalRatings: { $size: '$ratingsData' }
+                }
+            }
+        ]);
+
+        // Apply utilities filter in pipeline with case-insensitive regex
+        if (utilitiesFilter && utilitiesFilter.length > 0) {
+            console.log('🔍 [DEBUG] Utilities from query:', utilitiesFilter);
+
+            // Room must have ALL specified utilities (case-insensitive match)
+            // Use $and with $elemMatch for each utility to ensure all are present
+            const utilityMatches = utilitiesFilter.map(u => {
+                const escapedU = escapeRegExp(u);
+                console.log(`🔍 [DEBUG] Processing utility: "${u}" -> escaped: "${escapedU}"`);
+                return {
+                    utilities: {
+                        $elemMatch: { $regex: escapedU, $options: 'i' }
+                    }
+                };
+            });
+
+            console.log('🔍 [DEBUG] Generated utility matches:', JSON.stringify(utilityMatches, null, 2));
+
+            const matchStage = {
+                $match: {
+                    $and: utilityMatches
+                }
+            };
+
+            console.log('🔍 [DEBUG] Adding match stage:', JSON.stringify(matchStage, null, 2));
+            pipeline.push(matchStage);
+
+            console.log('🔍 [DEBUG] Pipeline after utilities filter:', JSON.stringify(pipeline, null, 2));
+        }
+
+        // Additional filters after populate
+        console.log('🔍 [DEBUG] Pipeline before additional filters:', pipeline.length, 'stages');
+
+        if (searchByTitle) {
+            const titleRe = escapeRegExp(searchByTitle);
+            pipeline.push({
+                $match: {
+                    $or: [
+                        { 'postData.title': { $regex: titleRe, $options: 'i' } },
+                        { address: { $regex: titleRe, $options: 'i' } },
+                        { province: { $regex: titleRe, $options: 'i' } },
+                        { district: { $regex: titleRe, $options: 'i' } }
+                    ]
+                }
+            });
+        }
+
         if (searchByUser) {
-            const userRe = new RegExp(escapeRegExp(searchByUser), 'i');
-            validRooms = validRooms.filter(room =>
-                room.user && (
-                    userRe.test(room.user.username) ||
-                    userRe.test(room.user.email)
-                )
-            );
+            const userRe = escapeRegExp(searchByUser);
+            pipeline.push({
+                $match: {
+                    $or: [
+                        { 'userData.username': { $regex: userRe, $options: 'i' } },
+                        { 'userData.email': { $regex: userRe, $options: 'i' } }
+                    ]
+                }
+            });
+        }
+
+        // Get total count with filters
+        const countPipeline = [...pipeline, { $count: 'total' }];
+        const countResult = await Room.aggregate(countPipeline);
+        const totalCount = countResult.length > 0 ? countResult[0].total : 0;
+
+        // Sorting
+        let sortStage = { createdAt: -1 };
+        if (req.query.sort === 'newest') sortStage = { createdAt: -1 };
+        else if (req.query.sort === 'priceAsc') sortStage = { price: 1 };
+        else if (req.query.sort === 'priceDesc') sortStage = { price: -1 };
+
+        console.log('🔍 [DEBUG] About to execute aggregation with', pipeline.length, 'stages');
+
+        pipeline.push({ $sort: sortStage });
+        pipeline.push({ $skip: skip });
+        pipeline.push({ $limit: limit });
+
+        const rooms = await Room.aggregate(pipeline);
+
+        console.log('🔍 [DEBUG] Found rooms count after filters:', rooms.length);
+        console.log('🔍 [DEBUG] Total rooms available:', totalCount);
+        if (req.query.utilities) {
+            console.log('🔍 [DEBUG] Utilities query param:', req.query.utilities);
+            if (rooms.length > 0) {
+                console.log('🔍 [DEBUG] First room utilities:', rooms[0].utilities);
+                console.log('🔍 [DEBUG] First 3 rooms utilities:', rooms.slice(0, 3).map(r => ({ id: r._id, utilities: r.utilities })));
+            } else {
+                console.log('🔍 [DEBUG] No rooms found matching utilities filter!');
+            }
         }
 
         // Format data để phù hợp với frontend
-        const formattedRooms = validRooms.map(room => ({
+        const formattedRooms = rooms.map(room => ({
             id: room._id.toString(),
-            postId: room.post?._id?.toString() || null,
-            title: room.post?.title || 'Không có tiêu đề',
-            postType: room.post?.postType || 'room_rental',
-            postTier: room.post?.postTier || 'normal',
+            postId: room.postData?._id?.toString() || null,
+            title: room.postData?.title || 'Không có tiêu đề',
+            postType: room.postData?.postType || 'room_rental',
+            postTier: room.postData?.postTier || 'normal',
             price: room.price,
             unit: room.unit,
             area: room.area,
+            beds: room.beds || 0,
+            baths: room.baths || 0,
             roomType: room.roomType,
             address: room.address,
             city: room.province,
+            district: room.district,
             district: room.district,
             ward: room.ward,
             image: room.images && room.images.length > 0 ? room.images[0] : '/logo512.png',
@@ -160,23 +302,87 @@ exports.getAllRooms = async (req, res) => {
             utilities: room.utilities || [],
             additionalCosts: room.additionalCosts || [],
             notes: room.notes || '',
-            author: room.user?.username || 'Người đăng',
-            phone: room.user?.phone || '',
-            email: room.user?.email || '',
-            description: room.post?.overviewDescription || '',
-            status: room.post?.status || 'pending',
-            postedAt: room.post?.createdAt || room.createdAt,
+            author: room.userData?.username || 'Người đăng',
+            authorAvatar: room.userInfoData?.avatar || null,
+            phone: room.userData?.phone || '',
+            email: room.userData?.email || '',
+            description: room.postData?.overviewDescription || '',
+            status: room.postData?.status || 'pending',
+            postedAt: room.postData?.createdAt || room.createdAt,
+            rating: room.averageRating ? Number(room.averageRating.toFixed(1)) : 0,
+            totalRatings: room.totalRatings || 0,
             location: {
                 lat: 10.77653,
                 lng: 106.70098,
                 address: `${room.address}, ${room.district}, ${room.province}`
-            }
+            },
+            // Thêm thông tin từ UserInfo cho AI matching
+            authorInterests: room.userInfoData?.interests || [],
+            authorHabits: room.userInfoData?.habits || [],
+            authorDislikes: room.userInfoData?.dislikes || [],
+            authorBio: room.userInfoData?.bio || '',
+            authorAge: room.userInfoData?.age || null,
+            authorGender: room.userInfoData?.gender || null,
+            authorProfession: room.userInfoData?.profession || ''
         }));
+
+
+        // AI Search Processing
+        let aiMessage = null;
+        let aiStats = null;
+        let finalRooms = formattedRooms; // Giữ format gốc
+        const textSearchAI = req.query.textSearchAI || req.query.TextSearchAI;
+
+        if (textSearchAI) {
+            console.log('🤖 [Controller] AI Search detected:', textSearchAI);
+
+            // Gửi formattedRooms (đã có format chuẩn) cho AI service
+            const aiResult = await matchRoomsWithAI(formattedRooms, textSearchAI);
+
+            if (aiResult.success && aiResult.matchedIds && aiResult.matchedIds.length > 0) {
+                console.log('🤖 [Controller] AI matching successful, filtering formatted rooms');
+
+                // Tạo Map từ formattedRooms để tra cứu nhanh
+                const roomMap = new Map();
+                formattedRooms.forEach(room => {
+                    roomMap.set(room.id, room);
+                });
+
+                // Tạo Map reasons từ AI
+                const reasonMap = new Map();
+                aiResult.matchedIds.forEach(item => {
+                    reasonMap.set(item.id, item.reason);
+                });
+
+                // Filter và sắp xếp theo thứ tự AI suggest, giữ nguyên format gốc
+                finalRooms = aiResult.matchedIds
+                    .map(item => {
+                        const room = roomMap.get(item.id);
+                        if (room) {
+                            return {
+                                ...room, // Giữ nguyên tất cả fields từ format gốc
+                                aiReason: reasonMap.get(item.id) // Chỉ thêm aiReason
+                            };
+                        }
+                        return null;
+                    })
+                    .filter(room => room !== null);
+
+                aiStats = aiResult.stats;
+                console.log('🤖 [Controller] Final matched rooms:', finalRooms.length);
+            } else {
+                console.log('🤖 [Controller] AI matching failed or no matches, using default results');
+                aiMessage = aiResult.message || 'Không tìm thấy phòng phù hợp với yêu cầu AI';
+            }
+        }
+
 
         res.json({
             success: true,
-            rooms: formattedRooms,
-            total: totalCount
+            rooms: finalRooms, // Trả về finalRooms (có thể là formattedRooms gốc hoặc filtered by AI)
+            total: totalCount,
+            aiMessage: aiMessage,
+            aiStats: aiStats
         });
     } catch (error) {
         console.error('Error fetching rooms:', error);
@@ -463,6 +669,8 @@ exports.createPost = async (req, res) => {
                 price: Number(form.price || form.priceFrom) || 0,
                 unit: form.unit || 'VND',
                 area: Number(form.area) || 0,
+                beds: Number(form.beds) || 0,
+                baths: Number(form.baths) || 0,
                 utilities: Array.isArray(form.utilities) ? form.utilities : (form.utilities ? [form.utilities] : []),
                 additionalCosts: sanitizedAdditionalCosts,
                 images: mediaUploaded.filter(f => f.type === 'image').map(f => f.url),

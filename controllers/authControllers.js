@@ -112,7 +112,6 @@ const authControllers = {
       if (!isMatch) return res.status(400).send('wrong password');
 
       if (user && isMatch) {
-        console.log('=== LOGIN SUCCESS ===');
         console.log('User:', user.username);
 
         const accessToken = authControllers.generateAccessToken(user);
