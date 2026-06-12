@@ -102,8 +102,12 @@ function Merge(list, left, mid, right):
 
 
 
+## 4. Quá Trình Thực Thi và Kết Quả Đầu Ra (Screenshots)
 
-4. Quá Trình Thực Thi và Kết Quả Đầu Ra (Screenshots)
+
+## Nếu mở ảnh bị lỗi anh chị vui lòng coi ảnh kết quả tại folde ScreenShort gửi kèm ạ !
+
+
 a.	Màn hình chính và Thêm sản phẩm
 -- Hiển thị menu chức năng và việc thêm một số sản phẩm hợp lệ, cảnh báo trùng mã hoặc tên.
 <img width="962" height="683" alt="image" src="https://github.com/user-attachments/assets/d8f0e774-a46a-4aa1-82ad-fd9a8082476e" />
@@ -125,11 +129,11 @@ c. Tìm kiếm bằng Binary Search (theo ID) và Hash Map (theo Tên)
 Tìm kiếm theo ID (binary search )
  
 
-<img width="962" height="387" alt="image" src="https://github.com/user-attachments/assets/6d25b5d1-5a86-4b8b-800e-0c41e6709356" />
+<img width="962" height="390" alt="image" src="https://github.com/user-attachments/assets/08aadac0-78ed-490e-b7f3-1814908e0882" />
 
 
 Tìm kiếm theo tên (HashMap)
-<img width="962" height="387" alt="image" src="https://github.com/user-attachments/assets/8077dfbd-b8e5-465c-a8c8-581b3f393704" />
+<img width="962" height="437" alt="image" src="https://github.com/user-attachments/assets/36f28e91-e939-415a-9365-15a474c6cf73" />
 
  
 d. Cập nhật và Xóa sản phẩm
