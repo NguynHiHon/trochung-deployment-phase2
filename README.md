@@ -85,7 +85,18 @@ function Merge(list, left, mid, right):
     Copy các phần tử còn lại của rightArr vào list (nếu có)
 
 
-3. Phân Tích Độ Phức Tạp Thuật Toán (Big-O)
+## 3. Phân tích độ phức tạp thuật toán (Big-O)
+
+* **Thêm sản phẩm (Add Product):** Thời gian $O(n)$, Không gian bộ nhớ $O(1)$. Do phải chạy vòng lặp quét qua toàn bộ `List` để đảm bảo mã ID không bị trùng lặp trước khi chèn phần tử mới.
+* **Cập nhật / Xóa sản phẩm (Update / Delete):** Thời gian $O(n)$, Không gian bộ nhớ $O(1)$. Quá trình tìm kiếm phần tử theo ID tốn $O(n)$. Thêm vào đó, thao tác xóa một phần tử ở giữa `List` làm các phần tử phía sau phải dịch chuyển lên cũng tốn tối đa $O(n)$.
+* **Tìm kiếm Nhị phân theo ID (Binary Search):** Thời gian $O(\log n)$, Không gian bộ nhớ $O(1)$. Tốc độ cực kỳ tối ưu nhờ nguyên lý liên tục chặt đôi không gian tìm kiếm (Lưu ý: chưa cộng gộp thời gian gọi hàm sắp xếp ban đầu).
+* **Tra cứu theo Tên bằng Bảng băm (Hash Lookup):** Thời gian $O(1)$ (trong trường hợp trung bình), Không gian bộ nhớ $O(n)$. Tốc độ phản hồi tức thời nhờ cơ chế hàm băm. Trường hợp xấu nhất suy biến về $O(n)$ rất hiếm khi xảy ra.
+* **Sắp xếp Nhanh theo Giá (QuickSort):** Thời gian trung bình $O(n \log n)$, Không gian bộ nhớ $O(\log n)$. Thuật toán thực hiện hoán đổi vị trí trực tiếp trên mảng hiện tại nên tốn rất ít RAM. Thuật toán chỉ bị chậm (rơi vào $O(n^2)$) nếu dữ liệu mảng đã bị sắp xếp sẵn hoặc ngược chiều.
+* **Sắp xếp Trộn theo Giá (MergeSort):** Thời gian $O(n \log n)$, Không gian bộ nhớ $O(n)$. Luôn chia đôi mảng đều đặn nên tốc độ cực kỳ ổn định trong mọi tình huống dữ liệu. Điểm trừ duy nhất là tốn thêm không gian RAM (bằng đúng kích thước mảng ban đầu) để cấp phát các mảng phụ khi trộn.
+
+---
+
+
 
 
 
