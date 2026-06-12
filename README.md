@@ -1,42 +1,146 @@
-# Backend Setup Guide
+Assignment: Inventory Management – Optimized Search & Sort
 
-## Environment Variables
+## 1. Cấu Trúc Dữ Liệu Được Sử Dụng
+*a. List<Product>  (Mảng động)
+ **Mục đích:** Lưu trữ tổng hợp tất cả các sản phẩm có trong kho hàng.
+ **Lý do lựa chọn:**
+  Cung cấp khả năng truy cập phần tử qua chỉ số (index) với thời gian $O(1)$.
+  Hỗ trợ tốt cho các thuật toán sắp xếp (QuickSort, MergeSort) và tìm kiếm nhị phân (Binary Search) yêu cầu hoán đổi và truy cập ngẫu nhiên các phần tử.
+  
+ Tự động thay đổi kích thước khi thêm/xóa phần tử.
 
-Tạo file `.env` trong thư mục `backend/` với nội dung sau:
+*b. Dictionary<string, Product>    (Bảng băm / Hash Map)
+ **Mục đích:** Lưu trữ các sản phẩm với khóa (key) là tên sản phẩm (`Name`) và giá trị (value) là đối tượng `Product`.
+ **Lý do lựa chọn:**
+   Cho phép tra cứu, tìm kiếm sản phẩm theo tên với thời gian trung bình là $O(1)$.
+   Kiểm tra xem một tên sản phẩm đã tồn tại hay chưa cực kỳ nhanh chóng, tối ưu hóa cho chức năng tra cứu (Hash-based Lookup) và khi thêm sản phẩm mới để tránh trùng lặp.
+## 2.(Pseudo-code) Các Thuật Toán
+*a. Tìm kiếm nhị phân (Binary Search) theo ID
 
-```env
-# Database
-MONGO_URL=mongodb+srv://your-username:your-password@your-cluster.mongodb.net/trochung?retryWrites=true&w=majority
 
-# JWT
-JWT_SECRET=your-jwt-secret-key-here
-JWT_REFRESH_SECRET=your-jwt-refresh-secret-key-here
+function BinarySearchById(targetId):
+    low = 0
+    high = list.length - 1
+    
+    while low <= high:
+        mid = low + (high - low) / 2
+        
+        if list[mid].Id == targetId:
+            return list[mid]
+        else if list[mid].Id < targetId:
+            low = mid + 1
+        else:
+            high = mid - 1
+            
+    return null // Không tìm thấy
 
-# Cloudinary Configuration
-# Đăng ký tài khoản tại https://cloudinary.com/console
-CLOUD_NAME=your-cloudinary-cloud-name
-API_KEY=your-cloudinary-api-key
-API_SECRET=your-cloudinary-api-secret
 
-# Server
-PORT=8000
-NODE_ENV=development
-```
 
-## Cloudinary Setup
 
-1. Đăng ký tài khoản tại [Cloudinary](https://cloudinary.com/console)
-2. Lấy thông tin từ Dashboard:
-   - Cloud Name
-   - API Key  
-   - API Secret
-3. Cập nhật vào file `.env`
+*b. Sắp xếp QuickSort
 
-## Chạy Server
 
-```bash
-npm install
-npm run dev
-```
 
-Server sẽ chạy tại `http://localhost:8000`
+function QuickSort(list, low, high):
+    if low < high:
+        pivotIndex = Partition(list, low, high)
+        QuickSort(list, low, pivotIndex - 1)
+        QuickSort(list, pivotIndex + 1, high)
+
+function Partition(list, low, high):
+    pivot = list[high]
+    i = low - 1
+    
+    for j = low to high - 1:
+        // So sánh theo ID hoặc Price tùy ngữ cảnh
+        if list[j] <= pivot: 
+            i = i + 1
+            swap(list[i], list[j])
+            
+    swap(list[i + 1], list[high])
+    return i + 1
+
+*c. Sắp xếp MergeSort
+function MergeSort(list, left, right):
+    if left < right:
+        mid = left + (right - left) / 2
+        MergeSort(list, left, mid)
+        MergeSort(list, mid + 1, right)
+        Merge(list, left, mid, right)
+function Merge(list, left, mid, right):
+    Tạo mảng leftArr từ list[left..mid]
+    Tạo mảng rightArr từ list[mid+1..right]
+    
+    i = 0, j = 0, k = left
+    while i < leftArr.length and j < rightArr.length:
+        if leftArr[i] <= rightArr[j]:
+            list[k] = leftArr[i]
+            i = i + 1
+        else:
+            list[k] = rightArr[j]
+            j = j + 1
+        k = k + 1
+        
+    Copy các phần tử còn lại của leftArr vào list (nếu có)
+    Copy các phần tử còn lại của rightArr vào list (nếu có)
+
+
+3. Phân Tích Độ Phức Tạp Thuật Toán (Big-O)
+
+
+
+
+
+
+4. Quá Trình Thực Thi và Kết Quả Đầu Ra (Screenshots)
+a.	Màn hình chính và Thêm sản phẩm
+-- Hiển thị menu chức năng và việc thêm một số sản phẩm hợp lệ, cảnh báo trùng mã hoặc tên.
+<img width="962" height="683" alt="image" src="https://github.com/user-attachments/assets/d8f0e774-a46a-4aa1-82ad-fd9a8082476e" />
+
+
+   
+<img width="962" height="333" alt="image" src="https://github.com/user-attachments/assets/597f58e2-b8f7-4b71-96c2-76ff4c0a08df" />
+
+
+ 
+ 
+b. Sắp xếp và so sánh hiệu suất thuật toán (QuickSort vs MergeSort)
+-- Kết quả chạy thực tế với lượng dữ liệu để cho thấy chênh lệch thời gian thực thi.
+ <img width="962" height="649" alt="image" src="https://github.com/user-attachments/assets/a0a64fe3-0d9d-4524-bbb1-8151827e85b9" />
+
+
+
+c. Tìm kiếm bằng Binary Search (theo ID) và Hash Map (theo Tên)
+Tìm kiếm theo ID (binary search )
+ 
+
+<img width="962" height="387" alt="image" src="https://github.com/user-attachments/assets/6d25b5d1-5a86-4b8b-800e-0c41e6709356" />
+
+
+Tìm kiếm theo tên (HashMap)
+<img width="962" height="387" alt="image" src="https://github.com/user-attachments/assets/8077dfbd-b8e5-465c-a8c8-581b3f393704" />
+
+ 
+d. Cập nhật và Xóa sản phẩm
+
+
+Cập nhật sản phẩm 
+
+
+ <img width="962" height="387" alt="image" src="https://github.com/user-attachments/assets/f4455db8-2fb0-4f0a-ace8-86e81dfb7614" />
+
+
+xóa sản phẩm
+
+ <img width="962" height="387" alt="image" src="https://github.com/user-attachments/assets/fb104500-7b78-4ba5-9888-24826cdb41ca" />
+
+
+
+Sau khi xóa sản phẩm đã biến mất khỏi danh sách 
+<img width="1463" height="683" alt="image" src="https://github.com/user-attachments/assets/43b47775-fb6e-4ac8-8ecc-21055fc09cba" />
+
+
+ 
+
+
+
